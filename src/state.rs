@@ -8,6 +8,8 @@ use crate::dsp::source::SourceKind;
 
 pub const MASTER_MIN_DB: f32 = -24.0;
 pub const MASTER_MAX_DB: f32 = 6.0;
+pub const PREAMP_MIN_DB: f32 = -24.0;
+pub const PREAMP_MAX_DB: f32 = 12.0;
 pub const METER_FLOOR_DB: f32 = -120.0;
 
 /// Everything the UI can change while audio is running. `Copy` so the audio
@@ -16,6 +18,7 @@ pub const METER_FLOOR_DB: f32 = -120.0;
 pub struct Params {
     pub gains_db: [f32; NUM_BANDS],
     pub master_db: f32,
+    pub preamp_db: f32,
     pub bypass: bool,
     pub source: SourceKind,
 }
@@ -25,6 +28,7 @@ impl Default for Params {
         Self {
             gains_db: [0.0; NUM_BANDS],
             master_db: 0.0,
+            preamp_db: 0.0,
             bypass: false,
             source: SourceKind::default(),
         }
@@ -37,6 +41,7 @@ impl Params {
             *g = g.clamp(-GAIN_LIMIT, GAIN_LIMIT);
         }
         self.master_db = self.master_db.clamp(MASTER_MIN_DB, MASTER_MAX_DB);
+        self.preamp_db = self.preamp_db.clamp(PREAMP_MIN_DB, PREAMP_MAX_DB);
         self
     }
 
@@ -119,6 +124,7 @@ mod tests {
         let p = Params::default();
         assert_eq!(p.gains_db, [0.0; NUM_BANDS]);
         assert_eq!(p.master_db, 0.0);
+        assert_eq!(p.preamp_db, 0.0);
         assert!(!p.bypass);
     }
 
@@ -128,11 +134,13 @@ mod tests {
         assert_eq!(state.snapshot(), Params::default());
         state.update(|p| {
             p.gains_db[3] = 6.0;
+            p.preamp_db = 3.0;
             p.bypass = true;
             p.source = SourceKind::PinkNoise;
         });
         let p = state.snapshot();
         assert_eq!(p.gains_db[3], 6.0);
+        assert_eq!(p.preamp_db, 3.0);
         assert!(p.bypass);
         assert_eq!(p.source, SourceKind::PinkNoise);
     }
@@ -143,10 +151,12 @@ mod tests {
         state.update(|p| {
             p.gains_db[0] = 500.0;
             p.master_db = -900.0;
+            p.preamp_db = 99.0;
         });
         let p = state.snapshot();
         assert_eq!(p.gains_db[0], GAIN_LIMIT);
         assert_eq!(p.master_db, MASTER_MIN_DB);
+        assert_eq!(p.preamp_db, PREAMP_MAX_DB);
     }
 
     #[test]
