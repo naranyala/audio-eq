@@ -1,141 +1,167 @@
 # TODOS — rust-egui-audio-eq
 
-Parent intent for every item: `PYRAMID-OF-INTENTS.md`. Tags `[Ex/Gx]` point at
-the epic and goal each task serves. Phase order is intentional — finish P0
-before starting P1.
+Parent intent for every item: [`PYRAMID-OF-INTENTS.md`](PYRAMID-OF-INTENTS.md).
+Tags `[Ex/Gx]` point at the epic and goal each task serves. Order within a
+phase is intentional; finish the prerequisites before starting dependent work.
 
-Legend: `[ ]` open · `[x]` done · `[~]` in progress / blocked (note why).
+Legend: `[ ]` open · `[x]` done · `[~]` in progress (note current state).
 
-## P0 — Make it real (audible EQ on Linux)
+## Codebase audit (2026-11-05)
 
-- [x] Environment probe (2026-10-15): toolchain 1.98.1 / edition 2024,
-      X11+Wayland display, ALSA + PulseAudio sink (48 kHz), system build deps
-      (alsa, xkbcommon, xcb, x11 family, libpulse) all present, crates.io
-      reachable — no installs required
-- [x] `[E1/G8]` Starter scaffold: pin `eframe 0.36` / `cpal 0.18` /
-      `egui_plot 0.37` (0.37 is the egui-0.36 pairing — egui_plot 0.36 wants
-      egui 0.35); empty `App` opens a window and exits cleanly — **done**:
-      `default-features = false` + `["default_fonts", "glow", "wayland",
-      "x11"]` cut deps from 347 → 182 unique crates (no wgpu/accesskit/zbus
-      tree); window opens on wlroots session
-- [x] `[E2/G2]` RBJ biquads (`src/dsp/biquad.rs`): peaking + low/high shelf
-      + LPF/HPF; unit tests for flat transparency, ±6 dB gain, shelf
-      direction, stability at extremes — **done**: 7 tests
-- [x] `[E2/G2,G5]` `EqChain` (`src/dsp/eq.rs`): 8 bands (60/150/400/1k/
-      2.4k/6k/12k/16k Hz — low-shelf first, high-shelf last), per-buffer
-      coefficient recompute, `magnitude_response`; flat-at-0-dB test —
-      **done**: `PEAKING_Q = 1.0`, coefficient update every 32 frames
-      (BLOCK const), 5 tests
-- [x] `[E2/G1]` Parameter store + smoothing (`src/state.rs`,
-      `src/dsp/smooth.rs`): shared snapshot-per-buffer pattern (`RwLock`
-      read once per buffer, never held while processing) + one-pole ~20 ms
-      smoother against zipper noise — **done**: band τ = 20 ms, master
-      τ = 30 ms; 8 tests total across both files
-- [x] `[E6/G1]` cpal output stream (`src/engine/live.rs`): device + config
-      selection, `f32`/`i16`/`u16` sample-format dispatch (cpal 0.18 requires
-      the `timeout` argument), errors surfaced to the status bar instead of a
-      panic, `Stream` owned by the app — **done**: `Device::description()`
-      (name() removed in 0.18), `Error` callback → status bar, `Drop` pauses
-      the stream
-- [x] `[E3/G1]` Test signals (`src/dsp/source.rs`): tone (fixed + sweep),
-      white noise, pink noise, silence — **done**: 440 Hz @ 0.3 amp, 200 Hz
-      → 8 kHz sweep, Paul-Kellet pink; 5 tests
-- [x] `[E1/G1,G5]` Main UI (`src/app/`): 8 band sliders (±12 dB), master
-      gain, bypass toggle, source selector, status bar (device, rate, buffer,
-      last error) — **done**: egui 0.36 `Panel::left/top/bottom` +
-      `eframe::App::ui` (not `update`), BYPASS badge, RMS/peak meters,
-      `EQ_INITIAL_GAINS` / `EQ_INITIAL_BYPASS` env hooks for headless runs
-- [x] `[E5/G5]` Response curve: `egui_plot` line from
-      `EqChain.magnitude_response` on a log-frequency axis (20 Hz–20 kHz),
-      recomputed only when parameters change — **done**: 200-pt line,
-      `x_grid_spacer` decade grid + kHz labels, `curve_dirty` flag
-- [x] `[E5/G5]` Repaint wiring: `request_repaint` on parameter change plus
-      ~30 Hz while running, so meters/curve stay live without spinning the
-      CPU — **done**: `request_repaint_after(33 ms)` after each frame
-- [x] `[E7/G8]` Quality gates green: `cargo test` green,
-      `cargo clippy --all-targets -- -D warnings` clean, 10 s window smoke
-      run shows sink + sample rate in the status bar with no error —
-      **done (2026-10-16)**: 26/26 tests, clippy exit 0, app stayed alive
-      with live `pactl list sink-inputs` entry
-      `PipeWire ALSA [rust-egui-audio-eq]`, only warning is a harmless
-      `xkbcommon` locale compose-file message
-- [x] `[E7/G1]` Audible proof: app plays a tone while `parec` captures the
-      sink monitor; record RMS for bypass vs +6 dB @ 440 Hz as evidence —
-      **done (2026-10-16)**, `alsa_output.pci-0000_00_1f.3.analog-stereo`
-      monitor, 4 s × 48 kHz stereo captures, sink restored to muted/0%
-      afterwards:
-      | config | RMS | level |
-      |---|---|---|
-      | flat EQ on (all 0 dB) | 0.2110 | −13.51 dBFS |
-      | bypass | 0.2082 | −13.63 dBFS (matches flat within 0.12 dB) |
-      | +6 dB @ 150 & 400 Hz bands | 0.4196 | −7.54 dBFS (**+6.09 dB** measured vs +6.59 dB RBJ prediction at 440 Hz) |
+Compared this tracker with the Rust source, `Cargo.toml`, README, and existing
+docs. The roadmap direction is still relevant, but several statuses and
+prerequisites needed correction:
 
-## P1 — Make it trustworthy, interoperable, observable
+- Live RMS/peak meters already run in the callback and are displayed in the
+  status bar; the old open item was stale.
+- The preamp field has been added to `Params`, but is not yet connected to the
+  renderer, UI, or response curve; treat it as in progress, not complete.
+- The README on this branch links to `docs/PLATFORMS.md` and `docs/PRESETS.md`,
+  but those files are not present in the docs directory. It also describes CI
+  that is not present yet. Fix these links/claims or add the referenced assets.
+- The current `EqEngine` is a UI/status contract and only `LiveEngine`
+  implements it. Keep device-free DSP conformance tests separate from tests
+  that need a real audio device.
+- Equalizer APO and AutoEQ profiles can contain arbitrary frequencies, Q
+  values, and filter types; implement a parameter/filter model capable of
+  representing them before claiming general import/export compatibility.
+- Existing callback state snapshots use an `RwLock`; review the real-time
+  non-blocking requirement before expanding callback-shared state.
 
-- [ ] `[E4/G3]` Equalizer APO `.txt` import/export: preamp + PK/LS/HS, OFF
-      skip, round-trip tests; cross-app check — export from
-      `dart-flutter-audio-eq`, load here, response curves must match
-- [ ] `[E4/G3,G4]` AutoEQ bundle: ≥20 headphone profiles as assets with
-      measurement-source attribution shown in the UI
-- [ ] `[E4/G4]` Presets: built-ins (Flat/Bass/Vocal/Treble) + named user
-      presets (CRUD) persisted via serde (`ron` or `json`); last-used state
-      restored on launch
-- [ ] `[E2/G2]` Truly parametric editing: per-band Q + filter type
-      (PK/LS/HS/notch) in the UI with persistence; `notch` closes the
-      cookbook promise; unit tests
-- [ ] `[E2/G2]` Preamp gain (−24…+12 dB) + output clamping; smoothing tuning
-      tests (no zipper artifacts on slider drags)
-- [ ] `[E3/G6]` File playback: symphonia decode (WAV/FLAC/MP3/OGG) into the
-      same `EqChain`; transport (play/pause, seek bar, loop), track label
-- [ ] `[E6/G1]` Device picker + sample-rate/buffer negotiation; hot-unplug →
-      status-bar notice, app stays alive
-- [ ] `[E5/G5]` Live meters: RMS/peak dB computed in the callback, shown in
-      the status bar
-- [ ] `[E5/G5,G1]` `OfflineEngine`: render the current EQ state to WAV +
-      golden-file test (doubles as the A/B evidence path)
-- [ ] `[E2/G2]` Golden vectors: `tool/golden_vectors.py` generates reference
-      biquad responses into `tests/data/`, consumed by Rust tests to catch
-      coefficient bugs point tests miss
-- [ ] `[E1/G1]` Engine conformance suite: the same gain/enable/clamp/curve
-      tests run against `LiveEngine`, `OfflineEngine`, and `MockEngine`
-- [ ] `[E7/G8]` Docs: README + `docs/` (architecture, dsp, presets) linking
-      both intent files
+## P0 — Make it real (audible EQ on Linux) — complete
 
-## P2 — Tier 2 + shippable
+- [x] Environment probe (2026-10-15): Rust 1.98.1 / edition 2024, X11 +
+      Wayland, ALSA and PulseAudio-compatible sink at 48 kHz, build
+      dependencies present, crates.io reachable.
+- [x] `[E1/G8]` Starter scaffold: eframe 0.36 / cpal 0.18 / egui_plot 0.37;
+      window opens and exits cleanly. Feature selection reduced the dependency
+      graph from 347 to 182 crates.
+- [x] `[E2/G2]` RBJ biquads: peaking, shelves, LPF, and HPF with unit tests.
+- [x] `[E2/G2,G5]` Eight-band `EqChain`, analytic magnitude response, and
+      tests for transparency, gain, clamping, and time-domain agreement.
+- [x] `[E2/G1]` Shared parameter snapshot and one-pole smoothing.
+- [x] `[E6/G1]` Live cpal output on the default device; supported sample
+      formats and startup/runtime errors surfaced without crashing.
+- [x] `[E3/G1]` Tone, sweep, white noise, pink noise, and silence sources.
+- [x] `[E1/G1,G5]` Main UI: band sliders, master gain, bypass, source picker,
+      device/error status, and startup test hooks.
+- [x] `[E5/G5]` Cached response curve and repaint cadence.
+- [x] `[E5/G5]` RMS/peak meters computed by the callback and shown in the
+      status bar. (Previously listed as open; verified in `src/engine/live.rs`,
+      `src/engine/render.rs`, and `src/app/status.rs`.)
+- [x] `[E7/G1]` Audible proof: sink-monitor capture verifies near-transparent
+      bypass and measurable EQ gain; methodology and results are in
+      `docs/DEVELOPMENT.md` and `docs/DSP.md`.
+- [x] `[E7/G8]` Local quality gates were run and a Linux window/audio smoke
+      test succeeded on the documented development machine. Keep re-running
+      the gates for new changes; this historical check is not a CI workflow.
 
-- [ ] `[E1/G7]` Windows target: build + smoke (device enumeration, tone
-      playback); no UI changes expected
-- [ ] `[E1/G7]` macOS target: build + smoke (CoreAudio device enumeration)
-- [ ] `[E5/G5]` Live FFT spectrum overlay behind the same plot widget
-- [ ] `[E7/G8]` CI (GitHub Actions or equivalent): fmt + clippy + test on
-      push, build check on tag, `cargo outdated` monthly
-- [ ] `[E8/G8]` LICENSE file (GPL-3.0 proposed, consistent with the
-      Equalizer314-based Flutter sibling): decide BEFORE importing any
-      GPL-derived code or accepting contributions
-- [ ] `[E8/G8]` Release track: icon + display name; Linux packaging (pick
-      ONE of deb/rpm/Flatpak) + Windows artifact; versioning scheme
-- [ ] `[E7/G8]` Tested-platform matrix: ALSA / PipeWire versions and devices
-      actually exercised, recorded in README
+## P1 — Correct, interoperable, observable
 
-## Backlog (do NOT promote without a goal)
+### P1a — Complete the DSP/control contract first
 
-- System-wide EQ via PipeWire/Pulse hooks — the `dart-flutter-audio-eq` lane;
-  needs a goal first
-- DAW plugin formats (VST/AU/LV2/CLAP) — needs a goal first, currently non-goal
-- Convolution / FIR engine (CamillaDSP-class) — only if IIR proves insufficient
-- Live-stream recording / capture-and-save — needs a goal first
-- Per-app profiles, loudness compensation, crossfeed — capture as G/E first
-- MIDI / hardware-controller mapping — needs a goal first
-- WASM build — egui supports it but cpal does not; conflicts with the audio
-  vision, needs its own goal
-- URL / streaming-radio playback — needs a goal first
-- First-run onboarding — needs a goal first
-- i18n — needs a goal first
-- Cloud sync / accounts — explicitly out of scope until vision changes
+- [~] `[E2/G2]` Preamp gain, −24…+12 dB: `Params.preamp_db` and boundary
+      constants exist, but the renderer, smoothing, toolbar control, reset,
+      response curve, and DSP tests still need integration. Preserve bypass
+      semantics (bypass excludes preamp), clamp the final output, and test
+      sanitization, audible gain, clipping, smoothing, and curve agreement.
+- [ ] `[E2/G2]` Harden parameter/sample-rate boundaries: define finite-value
+      fallback behavior for NaN/±Inf (including gains and preamp), guard invalid
+      renderer sample rates before computing `dt`, and test that bad external
+      values cannot produce NaN/Inf audio or coefficients.
+- [ ] `[E2/G2]` Add a serializable parametric filter model for each band:
+      frequency, supported filter kind (PK/LS/HS/notch), Q where applicable,
+      enable state, and gain. Sanitize bounds, preserve the current 8-band
+      graphic-EQ defaults, update the UI and curve from the same model, and add
+      coefficient/response tests. This is a prerequisite for general APO/AutoEQ
+      support, not merely a persistence task.
+- [ ] `[E2/G1,G5]` Remove or bound potentially blocking locks from the audio
+      callback parameter path. Select and document a snapshot handoff with
+      bounded callback work; add stress/concurrency tests and keep UI updates
+      from waiting on audio processing.
+
+### P1b — Interoperability and persistence
+
+- [ ] `[E4/G3]` Equalizer APO `.txt` import/export after the parametric model
+      lands: parse preamp, `Filter: ON`, PK/LS/HS and `Filter: OFF`; ignore
+      disabled filters, report malformed/unsupported enabled filters, preserve
+      representable settings, and round-trip supported files. Compare a shared
+      profile's response with `dart-flutter-audio-eq`.
+- [ ] `[E4/G4]` Built-in Flat/Bass/Vocal/Treble presets and named user presets
+      (CRUD), stored locally with schema/version handling; restore the last
+      selected preset. Test persistence, malformed files, and migration/default
+      behavior.
+- [ ] `[E4/G3,G4]` AutoEQ starter bundle: at least 20 headphone profiles,
+      searchable/selectable with measurement-source and profile attribution.
+      Confirm redistribution terms and record the source/version for every
+      bundled profile.
+
+### P1c — Playback, engine portability, and evidence
+
+- [ ] `[E3/G6]` File playback for WAV/FLAC/MP3/OGG using symphonia; play/pause,
+      seek, loop, and track label. Decode outside the real-time callback and
+      feed it through a bounded, preallocated handoff; test EOF, seek, decode
+      errors, and format/rate conversion.
+- [ ] `[E6/G1]` Device picker and explicit device/config negotiation; surface
+      device removal/recovery in the status bar and keep the window alive.
+      Test enumeration/error behavior on each supported OS and manually smoke
+      test available devices.
+- [ ] `[E1/G1,G5]` Offline renderer: render deterministic input and current
+      supported parameters to WAV without a device; test file headers, sample
+      count, clipping, and reference output.
+- [ ] `[E1/G1,G2]` Shared device-free conformance tests for the DSP/render
+      contract (gain, bypass, sanitization, clipping, response). Run against
+      mock and offline render paths; document which LiveEngine checks require a
+      physical/virtual device rather than implying ordinary unit tests cover
+      device behavior.
+- [ ] `[E2/G2]` Golden vectors generated from an independent RBJ reference,
+      consumed by Rust tests for representative filter types, gains, Q values,
+      and edge frequencies. Record reference provenance and numeric tolerance.
+- [ ] `[E7/G8]` Update architecture, DSP, and development docs when the
+      parametric model, preamp, presets, or playback behavior changes. Keep
+      README links valid; add `docs/PRESETS.md` / `docs/PLATFORMS.md` only when
+      those documents exist and are maintained.
+
+## P2 — Cross-platform and shippable
+
+- [ ] `[E7/G8]` Add GitHub Actions CI: fmt, clippy, and tests on pull requests
+      and pushes; monthly dependency-update report/check; tag-triggered build
+      matrix. Install and document required Linux build dependencies. CI build
+      success is not a hardware smoke test.
+- [ ] `[E1/G7]` Windows build and runtime smoke test (device enumeration and
+      audible test signal); fix platform issues without platform-specific DSP.
+- [ ] `[E1/G7]` macOS build and CoreAudio runtime smoke test (device
+      enumeration and audible test signal).
+- [ ] `[E7/G8]` Maintain a tested-platform matrix with OS/version, Rust
+      version, audio backend/device, sample format/rate, and evidence. Separate
+      compile-only targets from verified runtime targets.
+- [ ] `[E8/G8]` Decide and add the project license before importing
+      license-sensitive profile data, accepting outside contributions, or
+      publishing release artifacts.
+- [ ] `[E8/G8]` Define release versioning and app identity; choose one Linux
+      package format; automate reproducible Linux and Windows artifacts and
+      document installation/upgrade/uninstall behavior.
+- [ ] `[E5/G5]` Optional live FFT spectrum overlay, with windowing/averaging
+      and callback-safe data transfer; profile CPU cost and keep it optional.
+
+## Backlog (do not promote without a goal)
+
+- System-wide EQ via PipeWire/Pulse hooks — sibling-app lane and current
+  non-goal.
+- DAW plugin formats (VST/AU/LV2/CLAP) — non-goal unless scope changes.
+- Convolution/FIR engine — only if IIR proves insufficient.
+- Live-stream recording/capture-and-save, per-app profiles, loudness
+  compensation, crossfeed, MIDI/controller mapping, URL/radio playback,
+  onboarding, i18n, and cloud sync — require explicit goal/scope review first.
+- WASM — cpal does not support the intended audio path; conflicts with the
+  desktop-audio vision unless separately re-scoped.
 
 ## Working agreement
 
-- One task in flight at a time; check `[~]` with date + blocker when paused.
-- Every completion names its `[Ex/Gx]`; pyramid violations get re-scoped, not
+- Keep one task in flight at a time; mark `[~]` with date and blocker when
+  paused. Do not mark work complete until its acceptance checks pass.
+- Every task must support a `[Ex/Gx]`; pyramid conflicts are re-scoped, not
   merged.
-- Review monthly: promote at most 2 backlog items, retire stale ones.
+- Keep this tracker aligned with the actual code and docs; remove stale tasks
+  instead of preserving them as roadmap noise.
+- Review the backlog monthly and promote at most two items at a time.
