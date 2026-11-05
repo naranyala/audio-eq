@@ -5,12 +5,13 @@ use eframe::egui;
 use egui_plot::{GridInput, GridMark, Line, Plot, PlotPoints};
 
 use crate::dsp::eq::{EqChain, NUM_BANDS};
+use crate::state::{PREAMP_MAX_DB, PREAMP_MIN_DB};
 
 const F_MIN: f32 = 20.0;
 const F_MAX: f32 = 20_000.0;
 const CURVE_POINTS: usize = 200;
-const Y_MIN_DB: f64 = -18.0;
-const Y_MAX_DB: f64 = 18.0;
+const Y_MIN_DB: f64 = -36.0;
+const Y_MAX_DB: f64 = 36.0;
 
 const HZ_GRID: [f64; 18] = [
     20.0, 30.0, 50.0, 100.0, 150.0, 200.0, 300.0, 500.0, 700.0, 1_000.0, 1_500.0, 2_000.0, 3_000.0,
@@ -41,7 +42,7 @@ fn hz_grid(input: GridInput) -> Vec<GridMark> {
         .collect()
 }
 
-/// Cache of the composite EQ response, one point per log-spaced frequency.
+/// Cache of the composite EQ-plus-preamp response, one point per log-spaced frequency.
 pub struct CurveCache {
     points: Vec<[f64; 2]>,
     dirty: bool,
@@ -63,11 +64,21 @@ impl CurveCache {
         self.dirty
     }
 
-    /// Recompute from the same DSP that renders the audio (bypass does not
-    /// affect the drawn response).
-    pub fn rebuild(&mut self, gains: &[f32; NUM_BANDS], sample_rate: f32) {
+    /// Recompute from the EQ response plus preamp gain; bypass does not alter
+    /// the displayed processing response.
+    pub fn rebuild(
+        &mut self,
+        gains: &[f32; NUM_BANDS],
+        preamp_db: f32,
+        sample_rate: f32,
+    ) {
         let mut eq = EqChain::new(sample_rate);
         eq.set_gains(gains);
+        let preamp_db = if preamp_db.is_finite() {
+            preamp_db.clamp(PREAMP_MIN_DB, PREAMP_MAX_DB)
+        } else {
+            0.0
+        };
         let lo = F_MIN.log10();
         let hi = F_MAX.log10();
         self.points = (0..=CURVE_POINTS)
@@ -76,7 +87,7 @@ impl CurveCache {
                 let log_hz = lo + t * (hi - lo);
                 [
                     f64::from(log_hz),
-                    f64::from(eq.magnitude_db(10f32.powf(log_hz))),
+                    f64::from(eq.magnitude_db(10f32.powf(log_hz)) + preamp_db),
                 ]
             })
             .collect();
@@ -97,9 +108,11 @@ impl CurveCache {
                 .x_axis_formatter(|mark, _| fmt_hz(10f64.powf(mark.value)))
                 .show(ui, |plot_ui| {
                     plot_ui.line(
-                        Line::new("EQ", PlotPoints::from_iter(self.points.iter().copied())).stroke(
-                            egui::Stroke::new(2.0, egui::Color32::from_rgb(90, 170, 255)),
-                        ),
+                        Line::new("EQ + preamp", PlotPoints::from_iter(self.points.iter().copied()))
+                            .stroke(egui::Stroke::new(
+                                2.0,
+                                egui::Color32::from_rgb(90, 170, 255),
+                            )),
                     );
                 });
         });
@@ -143,11 +156,12 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_fills_points_and_clears_dirty() {
+    fn rebuild_includes_preamp_gain_and_clears_dirty() {
         let mut cache = CurveCache::new();
         assert!(cache.is_dirty());
-        cache.rebuild(&[6.0; NUM_BANDS], 48_000.0);
+        cache.rebuild(&[0.0; NUM_BANDS], 6.0, 48_000.0);
         assert!(!cache.is_dirty());
         assert_eq!(cache.points.len(), CURVE_POINTS + 1);
+        assert!(cache.points.iter().all(|point| (point[1] - 6.0).abs() < 1e-4));
     }
 }

@@ -8,24 +8,38 @@
 use crate::dsp::eq::{EqChain, NUM_BANDS};
 use crate::dsp::smooth::Smoother;
 use crate::dsp::source::Source;
-use crate::state::{MASTER_MAX_DB, MASTER_MIN_DB, Params};
+use crate::state::{
+    MASTER_MAX_DB, MASTER_MIN_DB, PREAMP_MAX_DB, PREAMP_MIN_DB, Params,
+};
 
 /// Coefficient-update granularity in frames (~0.7 ms at 48 kHz): smoothers
 /// advance every sample but filter coefficients rebuild only at this rate.
 pub const BLOCK: usize = 32;
 const BAND_TAU_S: f32 = 0.02;
 const MASTER_TAU_S: f32 = 0.03;
+const PREAMP_TAU_S: f32 = 0.02;
+const FALLBACK_SAMPLE_RATE: f32 = 48_000.0;
 
-/// The real-time DSP state: source → 8-band EQ → master → clamp, with
-/// meters accumulated per buffer.
+fn usable_sample_rate(sample_rate: f32) -> f32 {
+    if sample_rate.is_finite() && sample_rate >= 1.0 {
+        sample_rate
+    } else {
+        FALLBACK_SAMPLE_RATE
+    }
+}
+
+/// The real-time DSP state: source → preamp → 8-band EQ → master → clamp,
+/// with meters accumulated per buffer.
 pub struct Renderer {
     eq: EqChain,
     source: Source,
     bands: [Smoother; NUM_BANDS],
+    preamp: Smoother,
     master: Smoother,
     gains: [f32; NUM_BANDS],
     dt: f32,
     bypass: bool,
+    preamp_lin: f32,
     master_lin: f32,
     block_left: usize,
     sum_sq: f64,
@@ -35,14 +49,17 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(sample_rate: f32) -> Self {
+        let sample_rate = usable_sample_rate(sample_rate);
         Self {
             eq: EqChain::new(sample_rate),
             source: Source::default(),
             bands: std::array::from_fn(|_| Smoother::new(0.0, sample_rate, BAND_TAU_S)),
+            preamp: Smoother::new(0.0, sample_rate, PREAMP_TAU_S),
             master: Smoother::new(0.0, sample_rate, MASTER_TAU_S),
             gains: [0.0; NUM_BANDS],
             dt: 1.0 / sample_rate,
             bypass: false,
+            preamp_lin: 1.0,
             master_lin: 1.0,
             block_left: 0,
             sum_sq: 0.0,
@@ -55,10 +72,22 @@ impl Renderer {
     pub fn sync(&mut self, params: &Params) {
         self.source.set_kind(params.source);
         for (i, smoother) in self.bands.iter_mut().enumerate() {
-            smoother.set(params.gains_db[i]);
+            smoother.set(if params.gains_db[i].is_finite() {
+                params.gains_db[i].clamp(-12.0, 12.0)
+            } else {
+                0.0
+            });
         }
-        self.master
-            .set(params.master_db.clamp(MASTER_MIN_DB, MASTER_MAX_DB));
+        self.preamp.set(if params.preamp_db.is_finite() {
+            params.preamp_db.clamp(PREAMP_MIN_DB, PREAMP_MAX_DB)
+        } else {
+            0.0
+        });
+        self.master.set(if params.master_db.is_finite() {
+            params.master_db.clamp(MASTER_MIN_DB, MASTER_MAX_DB)
+        } else {
+            0.0
+        });
         self.bypass = params.bypass;
     }
 
@@ -68,9 +97,15 @@ impl Renderer {
             for (i, smoother) in self.bands.iter_mut().enumerate() {
                 self.gains[i] = smoother.next();
             }
+            self.preamp.next();
             self.master.next();
         }
         self.eq.set_gains(&self.gains);
+        self.preamp_lin = if self.bypass {
+            1.0
+        } else {
+            db_to_lin(self.preamp.value())
+        };
         self.master_lin = if self.bypass {
             1.0
         } else {
@@ -88,7 +123,10 @@ impl Renderer {
 
         let mut sample = self.source.next(self.dt);
         if !self.bypass {
-            sample = self.eq.process(sample) * self.master_lin;
+            sample = self.eq.process(sample * self.preamp_lin) * self.master_lin;
+        }
+        if !sample.is_finite() {
+            sample = 0.0;
         }
         sample = sample.clamp(-1.0, 1.0);
 
@@ -135,6 +173,17 @@ mod tests {
     }
 
     #[test]
+    fn invalid_sample_rates_fall_back_to_48khz() {
+        for sample_rate in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            let mut r = Renderer::new(sample_rate);
+            r.sync(&Params::default());
+            for _ in 0..128 {
+                assert!(r.next_sample().is_finite());
+            }
+        }
+    }
+
+    #[test]
     fn flat_chain_passes_the_source_unchanged() {
         let mut r = tone_renderer();
         for _ in 0..48_000 {
@@ -146,18 +195,22 @@ mod tests {
     }
 
     #[test]
-    fn bypass_is_bit_identical_to_flat_processing() {
+    fn bypass_is_bit_identical_and_ignores_all_gains() {
         let mut flat = tone_renderer();
-        let mut bypassed = tone_renderer();
+        let mut bypassed = Renderer::new(FS);
         bypassed.sync(&Params {
             source: SourceKind::Tone,
             bypass: true,
-            ..Default::default()
+            preamp_db: 12.0,
+            master_db: 6.0,
+            gains_db: [12.0; NUM_BANDS],
         });
         for i in 0..2_000 {
-            let a = flat.next_sample();
-            let b = bypassed.next_sample();
-            assert_eq!(a.to_bits(), b.to_bits(), "sample {i}");
+            assert_eq!(
+                flat.next_sample().to_bits(),
+                bypassed.next_sample().to_bits(),
+                "sample {i}"
+            );
         }
     }
 
@@ -178,5 +231,39 @@ mod tests {
         }
         let expected = 0.3 * 10.0f32.powf(-6.0 / 20.0);
         assert!((peak - expected).abs() < 0.005, "peak {peak} vs {expected}");
+    }
+
+    #[test]
+    fn preamp_gain_scales_tone_without_clipping() {
+        let mut r = Renderer::new(FS);
+        r.sync(&Params {
+            source: SourceKind::Tone,
+            preamp_db: 6.0,
+            ..Default::default()
+        });
+        let mut peak = 0.0f32;
+        for i in 0..48_000 {
+            let sample = r.next_sample();
+            if i >= 24_000 {
+                peak = peak.max(sample.abs());
+            }
+        }
+        let expected = 0.3 * 10.0f32.powf(6.0 / 20.0);
+        assert!((peak - expected).abs() < 0.005, "peak {peak} vs {expected}");
+    }
+
+    #[test]
+    fn preamp_boost_is_clamped_at_output() {
+        let mut r = Renderer::new(FS);
+        r.sync(&Params {
+            source: SourceKind::Tone,
+            preamp_db: PREAMP_MAX_DB,
+            ..Default::default()
+        });
+        for _ in 0..4_800 {
+            let sample = r.next_sample();
+            assert!(sample.is_finite());
+            assert!((-1.0..=1.0).contains(&sample));
+        }
     }
 }

@@ -148,6 +148,8 @@ PYRAMID-OF-INTENTS.md   vision → principles → goals → epics
 | [`docs/DSP.md`](docs/DSP.md) | Filter math, band layout, smoothing, bypass semantics, verification numbers |
 | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | Setup, commands, env hooks, test inventory, debug recipes (parec capture) |
 | [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md) | Crate rationale, feature flags, version pairing, supply-chain audit |
+| [`docs/PLATFORMS.md`](docs/PLATFORMS.md) | Verified Linux runtime coverage and future device smoke-test requirements |
+| [`docs/PRESETS.md`](docs/PRESETS.md) | Preset interchange goals, current status, and validation rules |
 | [`TODOS.md`](TODOS.md) | What's done and what's next |
 | [`PYRAMID-OF-INTENTS.md`](PYRAMID-OF-INTENTS.md) | Why the project exists; higher levels win arguments |
 
@@ -164,3 +166,9 @@ PYRAMID-OF-INTENTS.md   vision → principles → goals → epics
 
 No LICENSE file yet — GPL-3.0 is proposed. Decide before importing any
 GPL-derived code or accepting contributions.
+
+## Platform coverage and CI
+
+The project now includes a GitHub Actions workflow for formatting, clippy,
+and tests on pull requests and pushes, plus a tagged release build matrix. The
+runtime coverage log lives in [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
