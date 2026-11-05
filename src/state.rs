@@ -12,6 +12,14 @@ pub const PREAMP_MIN_DB: f32 = -24.0;
 pub const PREAMP_MAX_DB: f32 = 12.0;
 pub const METER_FLOOR_DB: f32 = -120.0;
 
+fn finite_clamp(value: f32, min: f32, max: f32, fallback: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(min, max)
+    } else {
+        fallback
+    }
+}
+
 /// Everything the UI can change while audio is running. `Copy` so the audio
 /// callback can snapshot it without allocating or holding the lock.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -37,11 +45,11 @@ impl Default for Params {
 
 impl Params {
     pub fn sanitized(mut self) -> Self {
-        for g in &mut self.gains_db {
-            *g = g.clamp(-GAIN_LIMIT, GAIN_LIMIT);
+        for gain in &mut self.gains_db {
+            *gain = finite_clamp(*gain, -GAIN_LIMIT, GAIN_LIMIT, 0.0);
         }
-        self.master_db = self.master_db.clamp(MASTER_MIN_DB, MASTER_MAX_DB);
-        self.preamp_db = self.preamp_db.clamp(PREAMP_MIN_DB, PREAMP_MAX_DB);
+        self.master_db = finite_clamp(self.master_db, MASTER_MIN_DB, MASTER_MAX_DB, 0.0);
+        self.preamp_db = finite_clamp(self.preamp_db, PREAMP_MIN_DB, PREAMP_MAX_DB, 0.0);
         self
     }
 
@@ -63,7 +71,7 @@ impl Params {
         if let Some(value) = get("EQ_INITIAL_BYPASS") {
             self.bypass = matches!(value.as_str(), "1" | "true" | "yes");
         }
-        self
+        self.sanitized()
     }
 }
 
@@ -108,7 +116,7 @@ impl SharedState {
 }
 
 pub fn to_db(linear: f32) -> f32 {
-    if linear > 1e-9 {
+    if linear.is_finite() && linear > 1e-9 {
         20.0 * linear.log10()
     } else {
         METER_FLOOR_DB
@@ -160,6 +168,20 @@ mod tests {
     }
 
     #[test]
+    fn non_finite_parameters_fall_back_to_flat_gain() {
+        let p = Params {
+            gains_db: [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, 0.0, 0.0, 0.0, 0.0],
+            master_db: f32::NAN,
+            preamp_db: f32::INFINITY,
+            ..Default::default()
+        }
+        .sanitized();
+        assert_eq!(p.gains_db, [0.0; NUM_BANDS]);
+        assert_eq!(p.master_db, 0.0);
+        assert_eq!(p.preamp_db, 0.0);
+    }
+
+    #[test]
     fn meter_round_trips_bits() {
         let state = SharedState::new();
         state.set_meter(0.25, 0.5);
@@ -169,10 +191,12 @@ mod tests {
     }
 
     #[test]
-    fn to_db_floors_silence() {
+    fn to_db_floors_silence_and_non_finite_values() {
         assert!((to_db(1.0) - 0.0).abs() < 1e-6);
         assert!((to_db(0.5) + 6.020_6).abs() < 0.01);
         assert_eq!(to_db(0.0), METER_FLOOR_DB);
+        assert_eq!(to_db(f32::NAN), METER_FLOOR_DB);
+        assert_eq!(to_db(f32::INFINITY), METER_FLOOR_DB);
     }
 
     fn fake_env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
